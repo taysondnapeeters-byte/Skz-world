@@ -1,0 +1,124 @@
+name: Auto-Build SKZ World Android APK
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  workflow_dispatch:
+
+jobs:
+  build-android-apk:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 1. Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: 2. Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: 3. Setup Java JDK 17 (Temurin)
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: 4. Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: 5. Auto-Organize Files & Generate Capacitor Config
+        run: |
+          mkdir -p www_build
+          # Kopieer alle game-bestanden automatisch (of ze nu in de root of in www/ staan)
+          find . -maxdepth 2 -name "*.html" -exec cp {} www_build/ \;
+          find . -maxdepth 2 -name "*.js" ! -name "capacitor*" -exec cp {} www_build/ \;
+          find . -maxdepth 2 -name "*.mp3" -exec cp {} www_build/ \; 2>/dev/null || true
+
+          # Maak dummy lege fase-bestanden aan als ze nog niet allemaal gepusht zijn (voorkomt 404 errors)
+          for f in phase2-studios.js phase3-kitchen.js phase4-dorms.js phase5-stadium.js; do
+            if [ ! -f "www_build/$f" ]; then
+              echo "// Placeholder for $f" > "www_build/$f"
+            fi
+          done
+
+          # Genereer package.json automatisch
+          cat << 'EOF' > package.json
+          {
+            "name": "skz-world-district-stay",
+            "version": "1.0.0",
+            "description": "SKZ World: District STAY - Nederlands",
+            "dependencies": {
+              "@capacitor/android": "^6.0.0",
+              "@capacitor/core": "^6.0.0"
+            },
+            "devDependencies": {
+              "@capacitor/cli": "^6.0.0"
+            }
+          }
+          EOF
+
+          # Genereer capacitor.config.json automatisch
+          cat << 'EOF' > capacitor.config.json
+          {
+            "appId": "com.papa.skzworld",
+            "appName": "SKZ World",
+            "webDir": "www_build",
+            "bundledWebRuntime": false
+          }
+          EOF
+
+      - name: 6. Install Capacitor & Build Android Project
+        run: |
+          npm install
+          npx cap add android
+          npx cap sync android
+
+      - name: 7. Force Landscape & Immersive Fullscreen in Android
+        run: |
+          # Forceer sensorLandscape oriëntatie in AndroidManifest.xml
+          sed -i 's/android:name=".MainActivity"/android:name=".MainActivity" android:screenOrientation="sensorLandscape" android:configChanges="orientation|keyboardHidden|keyboard|screenSize|locale|smallestScreenSize|screenLayout|uiMode"/g' android/app/src/main/AndroidManifest.xml
+
+          # Activeer echte Immersive Fullscreen (verberg Android systeembalken zoals in Avatar World)
+          cat << 'EOF' > android/app/src/main/java/com/papa/skzworld/MainActivity.java
+          package com.papa.skzworld;
+          import android.os.Bundle;
+          import android.view.View;
+          import android.view.WindowManager;
+          import com.getcapacitor.BridgeActivity;
+
+          public class MainActivity extends BridgeActivity {
+              @Override
+              public void onCreate(Bundle savedInstanceState) {
+                  super.onCreate(savedInstanceState);
+                  getWindow().setFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN, WindowManager.LayoutParams.FLAG_FULLSCREEN);
+                  hideSystemUI();
+              }
+              @Override
+              public void onWindowFocusChanged(boolean hasFocus) {
+                  super.onWindowFocusChanged(hasFocus);
+                  if (hasFocus) hideSystemUI();
+              }
+              private void hideSystemUI() {
+                  getWindow().getDecorView().setSystemUiVisibility(
+                      View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+                      | View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+                      | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+                      | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+                      | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                      | View.SYSTEM_UI_FLAG_FULLSCREEN);
+              }
+          }
+          EOF
+
+      - name: 8. Compile Debug APK with Gradle
+        run: |
+          cd android
+          chmod +x gradlew
+          ./gradlew assembleDebug
+
+      - name: 9. Upload Speelbare APK als Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SKZ-World-District-STAY-NL-APK
+          path: android/app/build/outputs/apk/debug/app-debug.apk
